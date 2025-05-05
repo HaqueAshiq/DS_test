@@ -1,0 +1,148 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+\-\-- title "Analysis of Permit and Inspection Dataset" 
+author: "Ashiq Haque" 
+date: "05/05/2025" output: html_document \-\--
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Question 1: Interesting Characteristic of the Dataset
+```{r, include=FALSE}
+#install.packages("data.table")
+library(data.table)
+library(dplyr)
+library(tidyverse)
+df <- fread("C:/Users/haquema4/Desktop/GetReady/Building_and_Safety_Inspections_20250505.csv", select = c("ADDRESS", "Inspection Type",
+                                                                                                    "Inspection Result","Latitude/Longitude",
+                                                                                                    "Inspection Date", "PERMIT"))
+library(lubridate)
+library(ggplot2)
+
+
+
+df1 <- fread("C:/Users/haquema4/Desktop/GetReady/Building_Permits_20250505.csv")
+df1$PERMIT<-df1$`PCIS Permit #`
+# Convert both dataframes to data.tables
+setDT(df)  # 10.4M rows
+setDT(df1)  # 1.6M rows
+
+# Perform merge
+merged_data <- df1[df, on = "PERMIT", nomatch = NA]
+
+#Table
+# Count by year
+merged_data$`Inspection Date`=as.Date(merged_data$`Inspection Date`,                                               format = "%m/%d/%Y")
+yearly_counts <- merged_data %>%
+  mutate(Year = year(merged_data$`Inspection Date`)) %>%
+  count(Year)
+
+yearly_counts$Percentage=yearly_counts$n/sum(yearly_counts$n)*100
+
+pander::pander(yearly_counts, 
+               caption = "Observations (n) by year",
+               digits=2,
+               style = "rmarkdown")
+
+# Visualization
+ggplot(yearly_counts, aes(x = Year, y = n)) +
+  geom_col(fill = "steelblue") +
+  labs(title = "Changes in number of inspection over the year", 
+       x = "Year", 
+       y = "Count") +
+  theme_minimal()
+```
+## Question 2: Geographic Distribution of Inspections
+```{r, include=FALSE}
+##Q2a:
+geography_table<-as.data.frame(table(merged_data$'Street Direction'))
+geography_table$Percentage<-geography_table$Freq/sum(geography_table$Freq)*100
+names(geography_table)<- c("Direction", "n", "Percentage")
+
+pander::pander(geography_table, 
+               caption = "Observations (n) by geographic location based on street direction",
+               digits=2,
+               style = "rmarkdown")
+barplot(table(merged_data$'Street Direction'), 
+        main = "Distribution of buiding inspection by geographical location",
+        xlab = "Street direction", 
+        ylab = "Count",
+        col = "steelblue",
+        border = "white")
+library(ggplot2)
+library(dplyr)
+##Q2b
+# Create a frequency table
+cross_tab <- merged_data %>%
+  count(`Street Direction`, `Inspection Result`) %>%
+  group_by(`Street Direction`) %>%
+  mutate(Percentage = n/sum(n)*100)
+
+
+pander::pander(cross_tab[cross_tab$`Inspection Result`==c("Approved"),], 
+               caption = "Observations (n) with building inspection approval by geographical location",
+               digits=2,
+               style = "rmarkdown")
+
+
+# Stacked bar chart
+ggplot(cross_tab, aes(x = `Street Direction`, y = Percentage, fill = `Inspection Result`)) +
+  geom_col() +
+  labs(title = "Distribution of Inspection Result by Street Direction",
+       x = "Street Direction",
+       y = "Percentage",
+       fill = "Category 2") +
+  theme_minimal()
+
+```
+## Question 3: Association between contractor location and inspection outcome
+```{r, include=FALSE}
+la_city_names <- c(
+  "LOS ANGEELS", 
+  "LOS ANGELES", 
+  "LOS ANGELES CA", 
+  "LOS ANGELES,", 
+  "LOS ANGELES, CA.", 
+  "LOS ANGELS", 
+  "LOS ANGLES"
+)
+
+# Create the indicator variable
+merged_data <- merged_data %>%
+  mutate(
+    out_of_town = ifelse(
+      toupper(`Contractor City`) %in% la_city_names,
+      1,  # 1 = In Town (LA)
+      0   # 0 = Out of Town
+    )
+  )
+# Create the indicator variable for potential violation:assuming non-approval indicates potential violation
+merged_data$PotentialViolation <-ifelse(merged_data$`Inspection Result`=="Approved",0,1)
+
+chisq.test(merged_data$out_of_town, merged_data$PotentialViolation)
+
+#The hypothesis that out of town and violation are strongly associated can be rejected at 5% level of significance.
+
+library(biglasso)
+# Convert data to big.matrix format (memory efficient)
+x <- as.big.matrix(as.matrix(merged_data[,c("out_of_town",
+                                            "Permit Type",
+                                            "Latitude/Longitude",
+                                            "Inspection Date",
+                                            "Occupancy",
+                                            "Zone")]))
+y <- merged_data$PotentialViolation
+
+# Fit model
+fit <- biglasso(
+  X = x,
+  y = y,
+  family = "binomial",
+  penalty = "lasso",
+  ncores = parallel::detectCores() - 1
+)
+```
